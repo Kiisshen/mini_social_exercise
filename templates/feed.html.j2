@@ -22,6 +22,36 @@
 </div>
 {% endif %}
 
+{% if people_you_might_know %}
+<section class="mb-5">
+  <h2 class="text-center border-bottom pb-2 mb-4"><span>People you may know</span></h2>
+  <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-5 g-3">
+    {% for suggestion in people_you_might_know %}
+    <div class="col">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body d-flex flex-column">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <h3 class="h6 mb-0 text-truncate">{{ user_display(suggestion.username) }}</h3>
+          </div>
+          {% if suggestion.liked_content %}
+          <p class="small text-success mb-2">You reacted on their content.</p>
+          {% endif %}
+          <p class="small text-muted mb-2">{{ suggestion.profile|truncate(90, True, '...')}}</p>
+          <p class="small mb-3">
+            <strong>{{ suggestion.follower_count }}</strong> Followers<br>
+            <strong>{{ suggestion.mutual_count }}</strong> Mutual friends
+          </p>
+          <form action="{{ url_for('follow_user', user_id=suggestion.id) }}" method="POST" class="mt-auto">
+            <button type="submit" class="btn btn-primary">Follow</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
 
 <div class="mb-4 text-center">

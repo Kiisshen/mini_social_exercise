@@ -112,6 +112,95 @@ def feed():
     current_user_id = session.get('user_id')
     params = []
 
+    # List for suggested users.
+    people_you_might_know = []
+    # Only suggest users to follow if the user is currently logged in.
+    if current_user_id:
+        # Make a DB query for users who the user doesnt already follow,
+        # and who have mutual followers or content liked by the current user.
+        suggested_users = query_db(
+            """
+            SELECT u.id, u.username, u.profile,
+                   (SELECT COUNT(*)
+                    FROM follows follower_count
+                    WHERE follower_count.followed_id = u.id) AS follower_count,
+                   (SELECT COUNT(*)
+                    FROM follows shared_follow
+                    WHERE shared_follow.follower_id = ?
+                      AND shared_follow.followed_id IN (
+                          SELECT candidate_follow.followed_id
+                          FROM follows candidate_follow
+                          WHERE candidate_follow.follower_id = u.id
+                                            )) AS mutual_count,
+                                     EXISTS (
+                                             SELECT 1
+                                             FROM reactions reacted_post
+                                             JOIN posts enjoyed_post ON enjoyed_post.id = reacted_post.post_id
+                                             WHERE reacted_post.user_id = ?
+                                                 AND enjoyed_post.user_id = u.id
+                                     ) AS liked_content
+            FROM users u
+            WHERE u.id != ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM follows existing_follow
+                  WHERE existing_follow.follower_id = ?
+                    AND existing_follow.followed_id = u.id
+              )
+            ORDER BY RANDOM()
+            """,
+            (current_user_id, current_user_id, current_user_id, current_user_id)
+        )
+        # Add selected suggested users' ids to a list to
+        # avoid duplicates in the next suggestions. Will later check against this list to confirm that.
+        selected_ids = []
+        # Construct list of suggestions that have mutual friends with the user.
+        mutual_suggestions = []
+        for suggested_user in sorted(
+            suggested_users,
+            # Sort the suggested users by mutual_count, then by follower_count,
+            # and finally by username, this way users with most mutual friends
+            # are shown first. Break ties by follower count and username.
+            key=lambda suggested_user: (-suggested_user['mutual_count'], -suggested_user['follower_count'], suggested_user['username'])
+        ):
+            if suggested_user['mutual_count']:
+                mutual_suggestions.append(suggested_user)
+                selected_ids.append(suggested_user['id'])
+            # I aimed for 3 mutual and 2 liked posts suggestions, and if those
+            # counts cannot be matched rest are random profiles.
+            if len(mutual_suggestions) == 3:
+                break
+
+        # Construct a list of suggestions that the user has
+        # liked content from, but is not already following.
+        liked_suggestions = []
+        for suggested_user in suggested_users:
+            if suggested_user['liked_content'] and suggested_user['id'] not in selected_ids:
+                liked_suggestions.append(suggested_user)
+                # Add also here the selected ids to the list.
+                selected_ids.append(suggested_user['id'])
+            if len(liked_suggestions) == 2:
+                break
+
+        random_suggestions = []
+        # If user doesnt have enough friends or liked posts, we cannot fill the 5 slots,
+        # so we will fill the rest with random suggestions.
+        random_slots = 5 - len(mutual_suggestions) - len(liked_suggestions)
+        # The randomisation of the order is done in the SQL query already so no need to do it here also,
+        # just take the first ones that are not already in the selected_ids list.
+        for suggested_user in suggested_users:
+            if len(random_suggestions) == random_slots:
+                break
+            if suggested_user['id'] not in selected_ids:
+                random_suggestions.append(suggested_user)
+
+        selected_suggestions = mutual_suggestions + random_suggestions + liked_suggestions
+        # Add the selected suggestions to the people_you_might_know list to be passed to the template.
+        for suggested_user in selected_suggestions:
+            # Suggestion needs to be casted to a dict from sql row.
+            suggestion = dict(suggested_user)
+            people_you_might_know.append(suggestion)
+
     #  2. Build the Query 
     where_clause = ""
     if show == 'following' and current_user_id:
@@ -194,6 +283,8 @@ def feed():
     #  4. Render Template with Pagination Info 
     return render_template('feed.html.j2', 
                            posts=posts_data, 
+                           # Pass the people_you_might_know list to the template, handled further in feed.html.j2.
+                           people_you_might_know=people_you_might_know,
                            current_sort=sort,
                            current_show=show,
                            page=page, # Pass current page number
