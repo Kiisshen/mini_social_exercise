@@ -16,7 +16,6 @@
         <div class="mb-3">
           <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
         </div>
-        <div id="post-submit-error" class="alert alert-danger d-none" role="alert"></div>
         <button type="submit" class="btn btn-primary float-end">Post</button>
       </form>
     </div>
@@ -257,32 +256,24 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const postForm = document.getElementById('new-post-form');
-  const errorMessage = document.getElementById('post-submit-error');
   const confirmationField = document.getElementById('confirm-post-input');
   const warningModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('guidelineWarningModal'));
 
   postForm.addEventListener('submit', async event => {
     event.preventDefault();
-    errorMessage.classList.add('d-none');
-
-    try {
-      const response = await fetch(postForm.dataset.checkUrl, {
-        method: 'POST',
-        body: new FormData(postForm)
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result.error || 'Unable to check your post.');
-      }
-      if (result.warning) {
-        warningModal.show();
-      } else {
-        confirmationField.value = '0';
-        postForm.submit();
-      }
-    } catch (error) {
-      errorMessage.textContent = error.message;
-      errorMessage.classList.remove('d-none');
+    const response = await fetch(postForm.dataset.checkUrl, {
+      method: 'POST',
+      body: new FormData(postForm)
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || 'Unable to check your post.');
+    }
+    if (result.warning) {
+      warningModal.show();
+    } else {
+      confirmationField.value = '0';
+      postForm.submit();
     }
   });
 
