@@ -11,12 +11,35 @@
   <div class="card shadow-sm">
     <div class="card-body">
       <h5 class="card-title">Create a new post</h5>
-      <form action="{{ url_for('add_post') }}" method="POST">
+      <form id="new-post-form" action="{{ url_for('add_post') }}" method="POST" data-check-url="{{ url_for('check_post') }}">
+        <input type="hidden" name="confirm_post" id="confirm-post-input" value="0">
         <div class="mb-3">
           <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
         </div>
+        <div id="post-submit-error" class="alert alert-danger d-none" role="alert"></div>
         <button type="submit" class="btn btn-primary float-end">Post</button>
       </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if session.get('user_id') %}
+<div class="modal fade" id="guidelineWarningModal" tabindex="-1" aria-labelledby="guidelineWarningTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="guidelineWarningTitle">Review before posting</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>This post might break the community guidelines. The automatic check can make mistakes, so please review your post before sharing.</p>
+        <a href="{{ url_for('rules') }}">Read the community guidelines</a>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirm-post-anyway">Post Anyways</button>
+      </div>
     </div>
   </div>
 </div>
@@ -36,7 +59,7 @@
           {% if suggestion.liked_content %}
           <p class="small text-success mb-2">You reacted on their content.</p>
           {% endif %}
-          <p class="small text-muted mb-2">{{ suggestion.profile|truncate(90, True, '...')}}</p>
+          <p class="small text-muted mb-2">{{ suggestion.profile|default('', true)|truncate(90, True, '...')}}</p>
           <p class="small mb-3">
             <strong>{{ suggestion.follower_count }}</strong> Followers<br>
             <strong>{{ suggestion.mutual_count }}</strong> Mutual friends
@@ -230,4 +253,44 @@
       Next &raquo;
     </a>
   </div>
+{% if session.get('user_id') %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const postForm = document.getElementById('new-post-form');
+  const errorMessage = document.getElementById('post-submit-error');
+  const confirmationField = document.getElementById('confirm-post-input');
+  const warningModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('guidelineWarningModal'));
+
+  postForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    errorMessage.classList.add('d-none');
+
+    try {
+      const response = await fetch(postForm.dataset.checkUrl, {
+        method: 'POST',
+        body: new FormData(postForm)
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to check your post.');
+      }
+      if (result.warning) {
+        warningModal.show();
+      } else {
+        confirmationField.value = '0';
+        postForm.submit();
+      }
+    } catch (error) {
+      errorMessage.textContent = error.message;
+      errorMessage.classList.remove('d-none');
+    }
+  });
+
+  document.getElementById('confirm-post-anyway').addEventListener('click', () => {
+    confirmationField.value = '1';
+    postForm.submit();
+  });
+});
+</script>
+{% endif %}
 {% endblock %}

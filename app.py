@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, jsonify, render_template, request, redirect, url_for, session, flash, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -302,25 +302,38 @@ def add_post():
         flash('You must be logged in to create a post.', 'danger')
         return redirect(url_for('login'))
 
-    # Get content from the submitted form
-    content = request.form.get('content')
+    content = request.form.get('content', '')
+    if not content.strip():
+        flash('Post cannot be empty.', 'warning')
+        return redirect(url_for('feed'))
 
-    # Pass the user's content through the moderation function
-    moderated_content = content
+    _, content_score = moderate_content(content)
+    confirmed = request.form.get('confirm_post') == '1'
+    if content_score > 0 and not confirmed:
+        return render_template('post_confirmation.html.j2', content=content)
 
-    # Basic validation to ensure post is not empty
-    if moderated_content and moderated_content.strip():
-        db = get_db()
-        db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
-                   (user_id, moderated_content))
-        db.commit()
-        flash('Your post was successfully created!', 'success')
-    else:
-        # This will catch empty posts or posts that were fully censored
-        flash('Post cannot be empty or was fully censored.', 'warning')
+    db = get_db()
+    db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
+               (user_id, content))
+    db.commit()
+    flash('Your post was successfully created!', 'success')
 
     # Redirect back to the main feed to see the new post
     return redirect(url_for('feed'))
+
+
+@app.route('/posts/check', methods=['POST'])
+def check_post():
+    """Checks a draft so the feed can warn before submitting it."""
+    if not session.get('user_id'):
+        return jsonify(error='You must be logged in to create a post.'), 401
+
+    content = request.form.get('content', '')
+    if not content.strip():
+        return jsonify(error='Post cannot be empty.'), 400
+
+    _, content_score = moderate_content(content)
+    return jsonify(warning=content_score > 0)
     
     
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
@@ -975,9 +988,36 @@ def user_risk_analysis(user_id):
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
     
-    score = 0
+    user = query_db(
+        'SELECT profile, created_at FROM users WHERE id = ?',
+        (user_id,),
+        one=True
+    )
+    if user is None:
+        return 0.0
 
-    return score;
+    _, profile_score = moderate_content(user['profile'] or '')
+
+    posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    post_scores = [moderate_content(post['content'] or '')[1] for post in posts]
+    average_post_score = sum(post_scores) / len(post_scores) if post_scores else 0.0
+
+    comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
+    comment_scores = [moderate_content(comment['content'] or '')[1] for comment in comments]
+    average_comment_score = sum(comment_scores) / len(comment_scores) if comment_scores else 0.0
+
+    created_at = user['created_at']
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at)
+    account_age_days = (datetime.utcnow() - created_at).days
+
+    score = profile_score + (average_post_score * 3) + average_comment_score
+    if account_age_days < 7:
+        score *= 1.5
+    elif account_age_days < 30:
+        score *= 1.2
+
+    return min(5.0, float(score))
 
     
 # Assignment 2.1
@@ -998,9 +1038,49 @@ def moderate_content(content):
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
 
-    moderated_content = content
-    score = 0
-    
+    moderated_content = content if isinstance(content, str) else str(content or '')
+    source_content = moderated_content
+
+    def make_whole_term_pattern(terms):
+        terms = [term for term in terms if term]
+        if not terms:
+            return None
+        alternatives = '|'.join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
+        return re.compile(r'(?<!\w)(?:' + alternatives + r')(?!\w)', re.IGNORECASE)
+
+    tier1_pattern = make_whole_term_pattern(TIER1_WORDS)
+    if tier1_pattern and tier1_pattern.search(moderated_content):
+        return '[content removed due to severe violation]', 5.0
+
+    tier2_pattern = make_whole_term_pattern(TIER2_PHRASES)
+    if tier2_pattern and tier2_pattern.search(moderated_content):
+        return '[content removed due to spam/scam policy]', 5.0
+
+    score = 0.0
+
+    tier3_pattern = make_whole_term_pattern(TIER3_WORDS)
+    if tier3_pattern:
+        moderated_content, tier3_matches = tier3_pattern.subn(
+            lambda match: '*' * len(match.group(0)),
+            moderated_content
+        )
+        score += 2.0 * tier3_matches
+
+    url_pattern = re.compile(r'\b(?:https?://|www\.)[^\s<>()]+', re.IGNORECASE)
+    def replace_url(match):
+        url = match.group(0)
+        trailing_punctuation = url[len(url.rstrip('.,!?;:')):]
+        return '[link removed]' + trailing_punctuation
+
+    moderated_content, url_matches = url_pattern.subn(replace_url, moderated_content)
+    score += 2.0 * url_matches
+
+    alphabetic_characters = [character for character in source_content if character.isalpha()]
+    if len(alphabetic_characters) > 15:
+        uppercase_ratio = sum(character.isupper() for character in alphabetic_characters) / len(alphabetic_characters)
+        if uppercase_ratio > 0.70:
+            score += 0.5
+
     return moderated_content, score
 
 # Coding Assignment #3
