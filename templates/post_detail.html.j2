@@ -23,6 +23,9 @@
         {% endif %}
       </div>
       
+      {% if post.is_newcomer_post %}
+      {% include 'partials/newcomer_welcome.html.j2' %}
+      {% endif %}
       <p class="card-text mt-2">{{ post.content }}</p>
 
       <!-- Reactions Display and Add Reaction Button (Copied from feed.html.j2) -->

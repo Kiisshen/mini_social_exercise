@@ -57,6 +57,9 @@
       <div class="card h-100 shadow-sm card-hover">
         <a href="{{ url_for('post_detail', post_id=post.id) }}" class="text-decoration-none text-reset">
           <div class="card-body">
+            {% if post.is_newcomer_post %}
+            {% include 'partials/newcomer_welcome.html.j2' %}
+            {% endif %}
             <p class="card-text">{{ post.content|truncate(100, True, '...') }}</p>
             <small class="text-muted">Posted on {{ post.created_at|datetimeformat }}</small>
           </div>

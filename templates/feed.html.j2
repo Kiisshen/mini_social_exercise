@@ -11,10 +11,13 @@
   <div class="card shadow-sm">
     <div class="card-body">
       <h5 class="card-title">Create a new post</h5>
+      {% if encourage_introduction %}
+      <p class="alert alert-info" id="introduction-prompt">Welcome! Want to introduce yourself? Share a little about your interests or what brings you here. It's entirely up to you what you'd like to share.</p>
+      {% endif %}
       <form id="new-post-form" action="{{ url_for('add_post') }}" method="POST" data-check-url="{{ url_for('check_post') }}">
         <input type="hidden" name="confirm_post" id="confirm-post-input" value="0">
         <div class="mb-3">
-          <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
+          <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" {% if encourage_introduction %}aria-describedby="introduction-prompt"{% endif %} required></textarea>
         </div>
         <button type="submit" class="btn btn-primary float-end">Post</button>
       </form>
@@ -128,6 +131,9 @@
         {% endif %}
       </div>
       
+      {% if entry.post.is_newcomer_post %}
+      {% include 'partials/newcomer_welcome.html.j2' %}
+      {% endif %}
       <p class="mt-2">{{ entry.post.content }}</p>
 
       <!-- Reactions Display and Add Reaction Button -->

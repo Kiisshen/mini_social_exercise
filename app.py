@@ -1,12 +1,14 @@
-from flask import Flask, jsonify, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, jsonify, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
 import json
+import math
 import sqlite3
 import hashlib
 import re
 from datetime import datetime
+from urllib.parse import urlsplit
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -39,6 +41,9 @@ def get_db():
             detect_types=sqlite3.PARSE_DECLTYPES
         )
         g.db.row_factory = sqlite3.Row
+        if 'newcomer_posts_count' not in {row['name'] for row in g.db.execute('PRAGMA table_info(users)')}:
+            with g.db:
+                g.db.execute('ALTER TABLE users ADD COLUMN newcomer_posts_count INTEGER')
 
     return g.db
 
@@ -78,6 +83,14 @@ def query_db(query, args=(), one=False, commit=False):
         print(f"Database error: {e}")
         return None
 
+def is_newcomer_post(post):
+    """Show the welcome label until the author has published five posts."""
+    user = query_db('SELECT newcomer_posts_count FROM users WHERE id = ?',
+                    (post['user_id'],), one=True)
+    return (user is not None and user['newcomer_posts_count'] is not None
+            and 0 < user['newcomer_posts_count'] < 5)
+
+
 @app.template_filter('datetimeformat')
 def datetimeformat(value):
     if isinstance(value, datetime):
@@ -110,6 +123,10 @@ def feed():
     offset = (page - 1) * POSTS_PER_PAGE
 
     current_user_id = session.get('user_id')
+    current_user = (query_db('SELECT newcomer_posts_count FROM users WHERE id = ?',
+                             (current_user_id,), one=True)
+                    if current_user_id is not None else None)
+    encourage_introduction = current_user is not None and current_user['newcomer_posts_count'] == 0
     params = []
 
     # List for suggested users.
@@ -266,6 +283,7 @@ def feed():
         reactions = query_db('SELECT reaction_type, COUNT(*) as count FROM reactions WHERE post_id = ? GROUP BY reaction_type', (post['id'],))
         comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post['id'],))
         post_dict = dict(post)
+        post_dict['is_newcomer_post'] = is_newcomer_post(post)
         post_dict['content'], _ = moderate_content(post_dict['content'])
         comments_moderated = []
         for comment in comments_raw:
@@ -285,6 +303,7 @@ def feed():
                            posts=posts_data, 
                            # Pass the people_you_might_know list to the template, handled further in feed.html.j2.
                            people_you_might_know=people_you_might_know,
+                           encourage_introduction=encourage_introduction,
                            current_sort=sort,
                            current_show=show,
                            page=page, # Pass current page number
@@ -313,9 +332,13 @@ def add_post():
         return render_template('post_confirmation.html.j2', content=content)
 
     db = get_db()
-    db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
-               (user_id, content))
-    db.commit()
+    with db:
+        db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
+                   (user_id, content))
+        db.execute('''UPDATE users
+                      SET newcomer_posts_count = newcomer_posts_count + 1
+                      WHERE id = ? AND newcomer_posts_count IS NOT NULL''',
+                   (user_id,))
     flash('Your post was successfully created!', 'success')
 
     # Redirect back to the main feed to see the new post
@@ -369,8 +392,8 @@ def delete_post(post_id):
     db.commit()
 
     flash('Your post was successfully deleted.', 'success')
-    # Redirect back to the page the user came from, or the feed as a fallback
-    return redirect(request.referrer or url_for('feed'))
+
+    return redirect(url_for('feed'))
 
 @app.route('/u/<username>')
 def user_profile(username):
@@ -388,6 +411,7 @@ def user_profile(username):
     posts = []
     for post_raw in posts_raw:
         post = dict(post_raw)
+        post['is_newcomer_post'] = is_newcomer_post(post)
         moderated_post_content, _ = moderate_content(post['content'])
         post['content'] = moderated_post_content
         posts.append(post)
@@ -471,6 +495,7 @@ def post_detail(post_id):
     #  Moderation for the Main Post 
     # Convert the raw database row to a mutable dictionary
     post = dict(post_raw)
+    post['is_newcomer_post'] = is_newcomer_post(post)
     # Unpack the tuple from moderate_content, we only need the moderated content string here
     moderated_post_content, _ = moderate_content(post['content'])
     post['content'] = moderated_post_content
@@ -527,7 +552,7 @@ def signup():
         cur = db.cursor()
         try:
             cur.execute(
-                'INSERT INTO users (username, password, location, birthdate, profile) VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO users (username, password, location, birthdate, profile, newcomer_posts_count) VALUES (?, ?, ?, ?, ?, 0)',
                 (username, hashed_password, location, birthdate, profile)
             )
             db.commit()
@@ -1105,9 +1130,77 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
-    recommended_posts = {} 
+    posts = query_db('''
+        SELECT p.id, p.content, p.created_at, p.user_id, u.username
+        FROM posts p JOIN users u ON u.id = p.user_id
+        ORDER BY p.created_at DESC, p.id DESC
+    ''')
+    if not posts:
+        return []
 
-    return recommended_posts;
+    followed_ids = {row['followed_id'] for row in query_db(
+        'SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,)
+    )}
+    reactions = query_db(
+        'SELECT post_id, reaction_type FROM reactions WHERE user_id = ?', (user_id,)
+    )
+    reacted_ids = {row['post_id'] for row in reactions}
+    positive_ids = {row['post_id'] for row in reactions
+                    if row['reaction_type'] in ('like', 'love', 'laugh', 'wow')}
+    candidates = [post for post in posts
+                  if post['user_id'] != user_id and post['id'] not in reacted_ids
+                  and (not filter_following or post['user_id'] in followed_ids)]
+    if not candidates:
+        return []
+    if not positive_ids and not followed_ids:
+        return candidates[:5]
+
+    stop_words = set('''a an and are as at be been but by can did do does for
+        from had has have how i if in into is it its just me my of on or our
+        so than that the their them there these they this to too up was we
+        were what when which who will with you your'''.split())
+    term_counts = [collections.Counter(
+        word for word in re.findall(r'[^\W\d_]+', post['content'].lower())
+        if len(word) > 1 and word not in stop_words
+    ) for post in posts]
+    document_counts = collections.Counter()
+    for counts in term_counts:
+        document_counts.update(counts.keys())
+    idf = {word: math.log((1 + len(posts)) / (1 + count)) + 1
+           for word, count in document_counts.items()}
+    vectors = {}
+    for post, counts in zip(posts, term_counts):
+        vector = {word: (1 + math.log(count)) * idf[word]
+                  for word, count in counts.items()}
+        norm = math.sqrt(sum(value * value for value in vector.values()))
+        vectors[post['id']] = {word: value / norm for word, value in vector.items()}
+
+    liked_profile = collections.Counter()
+    followed_profiles = collections.defaultdict(collections.Counter)
+    followed_counts = collections.Counter()
+    for post in posts:
+        vector = vectors[post['id']]
+        if post['id'] in positive_ids:
+            liked_profile.update(vector)
+        if post['user_id'] in followed_ids and post['id'] not in reacted_ids:
+            followed_profiles[post['user_id']].update(vector)
+            followed_counts[post['user_id']] += 1
+    profile = collections.Counter({word: 2 * value / len(positive_ids)
+                                   for word, value in liked_profile.items()})
+    for author, author_profile in followed_profiles.items():
+        for word, value in author_profile.items():
+            profile[word] += value / followed_counts[author] / len(followed_profiles)
+    norm = math.sqrt(sum(value * value for value in profile.values()))
+
+    def relevance(post):
+        similarity = (sum(value * profile[word]
+                          for word, value in vectors[post['id']].items()) / norm
+                      if norm else 0)
+        return similarity + (0.1 if post['user_id'] in followed_ids else 0)
+
+    recommended_posts = sorted(candidates, key=relevance, reverse=True)[:5]
+    return sorted(recommended_posts,
+                  key=lambda post: (post['created_at'], post['id']), reverse=True)
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
