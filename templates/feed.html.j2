@@ -36,6 +36,7 @@
       </div>
       <div class="modal-body">
         <p>This post might break the community guidelines. The automatic check can make mistakes, so please review your post before sharing.</p>
+        {% include 'partials/post_review.html.j2' %}
         <a href="{{ url_for('rules') }}">Read the community guidelines</a>
       </div>
       <div class="modal-footer">
@@ -66,6 +67,14 @@
             <strong>{{ suggestion.follower_count }}</strong> Followers<br>
             <strong>{{ suggestion.mutual_count }}</strong> Mutual friends
           </p>
+          {% if suggestion.post_preview %}
+          <a href="{{ url_for('post_detail', post_id=suggestion.post_preview.id) }}" class="suggested-post-preview border rounded p-2 mb-3 text-decoration-none text-reset">
+            <span class="small text-muted d-block mb-1">Recent post &middot; {{ suggestion.post_preview.created_at|datetimeformat }}</span>
+            <span class="suggested-post-content small d-block">{{ suggestion.post_preview.content|truncate(180, True, '...')|e }}</span>
+          </a>
+          {% else %}
+          <p class="small text-muted mb-3">No posts yet.</p>
+          {% endif %}
           <form action="{{ url_for('follow_user', user_id=suggestion.id) }}" method="POST" class="mt-auto">
             <button type="submit" class="btn btn-primary">Follow</button>
           </form>
@@ -79,14 +88,17 @@
 
 <h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
 
-<div class="mb-4 text-center">
+<div class="mb-4 d-flex flex-wrap justify-content-center gap-3">
 
-<!-- This is the 'sort' filter for New / Popular / Recommended -->
-  <div class="btn-group me-5" role="group" aria-label="Sort posts">
+<!-- Choose the post feed while preserving the All / Following filter. -->
+  <div class="btn-group flex-wrap" role="group" aria-label="Sort posts">
     <!-- The link preserves the current_show state -->
     <a href="{{ url_for('feed', sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
     <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
     <a href="{{ url_for('feed', sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
+    {% if session.get('user_id') %}
+    <a href="{{ url_for('feed', sort='people', show=current_show) }}" class="btn {% if current_sort == 'people' %}btn-primary{% else %}btn-light{% endif %}">People you may know</a>
+    {% endif %}
   </div>
 
   <!-- This is the 'show' filter for All / Following -->
@@ -102,19 +114,30 @@
   
 </div>
 
+{% if current_sort == 'people' %}
+<p class="text-center text-muted mb-4">Posts from people with mutual friends whose content you've reacted to, newest first.</p>
+{% endif %}
+
 <div class="col-md-8 mx-auto">
   {% for entry in posts %}
   <div class="card mb-4" id="post-{{ entry.post.id }}">
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center">
-        <h3 class="card-title mb-0">
-          {% if entry.followed_poster %}
-          <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }}<span class="text-success p-1" data-toggle="tooltip" data-placement="top" title="You are following this user"> ✓ </span>
+        <div>
+          <h3 class="card-title mb-0">
+            {% if entry.followed_poster %}
+            <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }}<span class="text-success p-1" data-toggle="tooltip" data-placement="top" title="You are following this user"> ✓ </span>
 </a>
-          {% else %}
-          <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }} </a>
+            {% else %}
+            <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }} </a>
+            {% endif %}
+          </h3>
+          {% if current_sort == 'people' %}
+          <p class="small text-success mt-1 mb-0">You reacted on their content.<br>
+            <span class="text-success">You have {{ entry.post.mutual_count }} {{ 'friend' if entry.post.mutual_count == 1 else 'friends' }} in common.</span>
+          </p>
           {% endif %}
-        </h3>
+        </div>
 
         
         {% if session.get('user_id') == entry.post.user_id %}
@@ -263,6 +286,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   const postForm = document.getElementById('new-post-form');
   const confirmationField = document.getElementById('confirm-post-input');
+  const postPreview = document.getElementById('flagged-post-preview');
   const warningModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('guidelineWarningModal'));
 
   postForm.addEventListener('submit', async event => {
@@ -276,6 +300,12 @@ document.addEventListener('DOMContentLoaded', () => {
       throw new Error(result.error || 'Unable to check your post.');
     }
     if (result.warning) {
+      postPreview.replaceChildren();
+      for (const segment of result.review_segments) {
+        const text = document.createElement(segment.flagged ? 'mark' : 'span');
+        text.textContent = segment.text;
+        postPreview.appendChild(text);
+      }
       warningModal.show();
     } else {
       confirmationField.value = '0';

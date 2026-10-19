@@ -7,7 +7,7 @@
       <form action="{{ url_for('add_post') }}" method="POST">
         <div class="mb-3">
           <label for="post-content" class="form-label">Your post</label>
-          <textarea class="form-control" id="post-content" name="content" rows="5" required>{{ content }}</textarea>
+          <textarea class="form-control" id="post-content" name="content" rows="5" required>{{ content|e }}</textarea>
         </div>
         <button type="submit" class="btn btn-primary">Review post</button>
       </form>
@@ -24,12 +24,13 @@
       </div>
       <div class="modal-body">
         <p>This post might break the community guidelines. The automatic check can make mistakes, so please review your post before sharing.</p>
+        {% include 'partials/post_review.html.j2' %}
         <a href="{{ url_for('rules') }}">Read the community guidelines</a>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
         <form action="{{ url_for('add_post') }}" method="POST">
-          <input type="hidden" name="content" value="{{ content }}">
+          <input type="hidden" name="content" value="{{ content|e }}">
           <input type="hidden" name="confirm_post" value="1">
           <button type="submit" class="btn btn-primary">Post Anyways</button>
         </form>

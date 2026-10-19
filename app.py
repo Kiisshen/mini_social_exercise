@@ -123,6 +123,9 @@ def feed():
     offset = (page - 1) * POSTS_PER_PAGE
 
     current_user_id = session.get('user_id')
+    if sort == 'people' and not current_user_id:
+        flash('Log in to see posts from people you may know.', 'info')
+        return redirect(url_for('login'))
     current_user = (query_db('SELECT newcomer_posts_count FROM users WHERE id = ?',
                              (current_user_id,), one=True)
                     if current_user_id is not None else None)
@@ -212,17 +215,39 @@ def feed():
                 random_suggestions.append(suggested_user)
 
         selected_suggestions = mutual_suggestions + random_suggestions + liked_suggestions
+        post_previews = suggested_post_previews(
+            current_user_id, {user['id'] for user in selected_suggestions})
         # Add the selected suggestions to the people_you_might_know list to be passed to the template.
         for suggested_user in selected_suggestions:
             # Suggestion needs to be casted to a dict from sql row.
             suggestion = dict(suggested_user)
+            suggestion['post_preview'] = post_previews.get(suggestion['id'])
             people_you_might_know.append(suggestion)
 
     #  2. Build the Query 
-    where_clause = ""
+    conditions = []
     if show == 'following' and current_user_id:
-        where_clause = "WHERE p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
+        conditions.append('p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)')
         params.append(current_user_id)
+    if sort == 'people':
+        conditions.extend([
+            'p.user_id != ?',
+            '''EXISTS (
+                SELECT 1 FROM follows my_follow
+                JOIN follows author_follow
+                  ON author_follow.followed_id = my_follow.followed_id
+                WHERE my_follow.follower_id = ?
+                  AND author_follow.follower_id = p.user_id
+            )''',
+            '''EXISTS (
+                SELECT 1 FROM reactions my_reaction
+                JOIN posts reacted_post ON reacted_post.id = my_reaction.post_id
+                WHERE my_reaction.user_id = ?
+                  AND reacted_post.user_id = p.user_id
+            )'''
+        ])
+        params.extend([current_user_id, current_user_id, current_user_id])
+    where_clause = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
 
     # Add the pagination parameters to the query arguments
     pagination_params = (POSTS_PER_PAGE, offset)
@@ -250,11 +275,27 @@ def feed():
             FROM posts p
             JOIN users u ON p.user_id = u.id
             {where_clause}
-            ORDER BY p.created_at DESC
+            ORDER BY p.created_at DESC, p.id DESC
             LIMIT ? OFFSET ?
         """
         final_params = params + list(pagination_params)
         posts = query_db(query, final_params)
+
+    mutual_counts = {}
+    if sort == 'people' and posts:
+        author_ids = sorted({post['user_id'] for post in posts})
+        placeholders = ', '.join('?' for _ in author_ids)
+        mutual_counts = {row['user_id']: row['mutual_count'] for row in query_db(
+            f'''SELECT author_follow.follower_id AS user_id,
+                       COUNT(DISTINCT my_follow.followed_id) AS mutual_count
+                FROM follows my_follow
+                JOIN follows author_follow
+                  ON author_follow.followed_id = my_follow.followed_id
+                WHERE my_follow.follower_id = ?
+                  AND author_follow.follower_id IN ({placeholders})
+                GROUP BY author_follow.follower_id''',
+            [current_user_id] + author_ids
+        )}
 
     posts_data = []
     for post in posts:
@@ -283,6 +324,7 @@ def feed():
         reactions = query_db('SELECT reaction_type, COUNT(*) as count FROM reactions WHERE post_id = ? GROUP BY reaction_type', (post['id'],))
         comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post['id'],))
         post_dict = dict(post)
+        post_dict['mutual_count'] = mutual_counts.get(post['user_id'], 0)
         post_dict['is_newcomer_post'] = is_newcomer_post(post)
         post_dict['content'], _ = moderate_content(post_dict['content'])
         comments_moderated = []
@@ -329,7 +371,8 @@ def add_post():
     _, content_score = moderate_content(content)
     confirmed = request.form.get('confirm_post') == '1'
     if content_score > 0 and not confirmed:
-        return render_template('post_confirmation.html.j2', content=content)
+        return render_template('post_confirmation.html.j2', content=content,
+                               review_segments=post_review_segments(content))
 
     db = get_db()
     with db:
@@ -356,7 +399,8 @@ def check_post():
         return jsonify(error='Post cannot be empty.'), 400
 
     _, content_score = moderate_content(content)
-    return jsonify(warning=content_score > 0)
+    return jsonify(warning=content_score > 0,
+                   review_segments=post_review_segments(content))
     
     
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
@@ -1045,6 +1089,55 @@ def user_risk_analysis(user_id):
     return min(5.0, float(score))
 
     
+def make_whole_term_pattern(terms):
+    terms = [term for term in terms if term]
+    if not terms:
+        return None
+    alternatives = '|'.join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
+    return re.compile(r'(?<!\w)(?:' + alternatives + r')(?!\w)', re.IGNORECASE)
+
+
+URL_PATTERN = re.compile(r'\b(?:https?://|www\.)[^\s<>()]+', re.IGNORECASE)
+
+
+def has_excessive_capitals(content):
+    letters = [character for character in content if character.isalpha()]
+    return (len(letters) > 15
+            and sum(character.isupper() for character in letters) / len(letters) > 0.40)
+
+
+def post_review_segments(content):
+    """Split the original draft into plain text and flagged text for safe display."""
+    spans = []
+    for terms in (TIER1_WORDS, TIER2_PHRASES, TIER3_WORDS):
+        pattern = make_whole_term_pattern(terms)
+        if pattern:
+            spans.extend(match.span() for match in pattern.finditer(content))
+    for match in URL_PATTERN.finditer(content):
+        spans.append((match.start(), match.start() + len(match.group().rstrip('.,!?;:'))))
+    if has_excessive_capitals(content):
+        spans.extend(match.span() for match in re.finditer(r'[^\W\d_]+', content)
+                     if any(character.isupper() for character in match.group()))
+
+    merged_spans = []
+    for start, end in sorted(spans):
+        if merged_spans and start <= merged_spans[-1][1]:
+            merged_spans[-1] = (merged_spans[-1][0], max(end, merged_spans[-1][1]))
+        else:
+            merged_spans.append((start, end))
+
+    segments = []
+    cursor = 0
+    for start, end in merged_spans:
+        if cursor < start:
+            segments.append({'text': content[cursor:start], 'flagged': False})
+        segments.append({'text': content[start:end], 'flagged': True})
+        cursor = end
+    if cursor < len(content):
+        segments.append({'text': content[cursor:], 'flagged': False})
+    return segments
+
+
 # Assignment 2.1
 def moderate_content(content):
     """
@@ -1066,13 +1159,6 @@ def moderate_content(content):
     moderated_content = content if isinstance(content, str) else str(content or '')
     source_content = moderated_content
 
-    def make_whole_term_pattern(terms):
-        terms = [term for term in terms if term]
-        if not terms:
-            return None
-        alternatives = '|'.join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
-        return re.compile(r'(?<!\w)(?:' + alternatives + r')(?!\w)', re.IGNORECASE)
-
     tier1_pattern = make_whole_term_pattern(TIER1_WORDS)
     if tier1_pattern and tier1_pattern.search(moderated_content):
         return '[content removed due to severe violation]', 5.0
@@ -1091,20 +1177,16 @@ def moderate_content(content):
         )
         score += 2.0 * tier3_matches
 
-    url_pattern = re.compile(r'\b(?:https?://|www\.)[^\s<>()]+', re.IGNORECASE)
     def replace_url(match):
         url = match.group(0)
         trailing_punctuation = url[len(url.rstrip('.,!?;:')):]
         return '[link removed]' + trailing_punctuation
 
-    moderated_content, url_matches = url_pattern.subn(replace_url, moderated_content)
+    moderated_content, url_matches = URL_PATTERN.subn(replace_url, moderated_content)
     score += 2.0 * url_matches
 
-    alphabetic_characters = [character for character in source_content if character.isalpha()]
-    if len(alphabetic_characters) > 15:
-        uppercase_ratio = sum(character.isupper() for character in alphabetic_characters) / len(alphabetic_characters)
-        if uppercase_ratio > 0.70:
-            score += 0.5
+    if has_excessive_capitals(source_content):
+        score += 0.5
 
     return moderated_content, score
 
@@ -1130,13 +1212,49 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
+    posts, followed_ids, reacted_ids, scores = get_recommendation_data(user_id)
+    candidates = [post for post in posts
+                  if post['user_id'] != user_id and post['id'] not in reacted_ids
+                  and (not filter_following or post['user_id'] in followed_ids)]
+    recommended_posts = sorted(candidates, key=lambda post: scores[post['id']],
+                               reverse=True)[:5]
+    return sorted(recommended_posts,
+                  key=lambda post: (post['created_at'], post['id']), reverse=True)
+
+
+def suggested_post_previews(user_id, author_ids):
+    """Choose the best-scoring post from each suggested author's five newest."""
+    if not author_ids:
+        return {}
+    posts, _, _, scores = get_recommendation_data(user_id)
+    recent_posts = collections.defaultdict(list)
+    for post in posts:
+        if post['user_id'] in author_ids and len(recent_posts[post['user_id']]) < 5:
+            recent_posts[post['user_id']].append(post)
+
+    previews = {}
+    for author_id, candidates in recent_posts.items():
+        # Candidates are newest first, so equal scores favor the newest post.
+        preview = dict(max(candidates, key=lambda post: scores[post['id']]))
+        preview['content'], _ = moderate_content(preview['content'])
+        previews[author_id] = preview
+    return previews
+
+
+def get_recommendation_data(user_id):
+    """Share relevance scores between recommendations and suggested-user previews."""
+    cache = g.setdefault('recommendation_data', {})
+    if user_id in cache:
+        return cache[user_id]
+
     posts = query_db('''
         SELECT p.id, p.content, p.created_at, p.user_id, u.username
         FROM posts p JOIN users u ON u.id = p.user_id
         ORDER BY p.created_at DESC, p.id DESC
     ''')
     if not posts:
-        return []
+        cache[user_id] = ([], set(), set(), {})
+        return cache[user_id]
 
     followed_ids = {row['followed_id'] for row in query_db(
         'SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,)
@@ -1147,13 +1265,10 @@ def recommend(user_id, filter_following):
     reacted_ids = {row['post_id'] for row in reactions}
     positive_ids = {row['post_id'] for row in reactions
                     if row['reaction_type'] in ('like', 'love', 'laugh', 'wow')}
-    candidates = [post for post in posts
-                  if post['user_id'] != user_id and post['id'] not in reacted_ids
-                  and (not filter_following or post['user_id'] in followed_ids)]
-    if not candidates:
-        return []
     if not positive_ids and not followed_ids:
-        return candidates[:5]
+        cache[user_id] = (posts, followed_ids, reacted_ids,
+                          {post['id']: 0.0 for post in posts})
+        return cache[user_id]
 
     stop_words = set('''a an and are as at be been but by can did do does for
         from had has have how i if in into is it its just me my of on or our
@@ -1198,9 +1313,9 @@ def recommend(user_id, filter_following):
                       if norm else 0)
         return similarity + (0.1 if post['user_id'] in followed_ids else 0)
 
-    recommended_posts = sorted(candidates, key=relevance, reverse=True)[:5]
-    return sorted(recommended_posts,
-                  key=lambda post: (post['created_at'], post['id']), reverse=True)
+    cache[user_id] = (posts, followed_ids, reacted_ids,
+                      {post['id']: relevance(post) for post in posts})
+    return cache[user_id]
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
