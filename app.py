@@ -117,6 +117,8 @@ def feed():
         page = 1
     sort = request.args.get('sort', 'new').lower()
     show = request.args.get('show', 'all').lower()
+    if sort == 'people':
+        show = 'all'
     
     # Define how many posts to show per page
     POSTS_PER_PAGE = 10
@@ -232,6 +234,11 @@ def feed():
     if sort == 'people':
         conditions.extend([
             'p.user_id != ?',
+            '''NOT EXISTS (
+                SELECT 1 FROM follows existing_follow
+                WHERE existing_follow.follower_id = ?
+                  AND existing_follow.followed_id = p.user_id
+            )''',
             '''EXISTS (
                 SELECT 1 FROM follows my_follow
                 JOIN follows author_follow
@@ -246,7 +253,7 @@ def feed():
                   AND reacted_post.user_id = p.user_id
             )'''
         ])
-        params.extend([current_user_id, current_user_id, current_user_id])
+        params.extend([current_user_id] * 4)
     where_clause = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
 
     # Add the pagination parameters to the query arguments

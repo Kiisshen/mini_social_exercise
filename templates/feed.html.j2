@@ -97,13 +97,13 @@
     <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
     <a href="{{ url_for('feed', sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
     {% if session.get('user_id') %}
-    <a href="{{ url_for('feed', sort='people', show=current_show) }}" class="btn {% if current_sort == 'people' %}btn-primary{% else %}btn-light{% endif %}">People you may know</a>
+    <a href="{{ url_for('feed', sort='people', show='all') }}" class="btn {% if current_sort == 'people' %}btn-primary{% else %}btn-light{% endif %}">People you may know</a>
     {% endif %}
   </div>
 
   <!-- This is the 'show' filter for All / Following -->
-  <!-- Following is only shown to logged in users -->
-  {% if session.get('user_id') %}
+  <!-- The people feed always excludes followed users. -->
+  {% if session.get('user_id') and current_sort != 'people' %}
   <div class="btn-group" role="group" aria-label="Filter posts">
     <!-- The link preserves the current_sort state -->
     <a href="{{ url_for('feed', sort=current_sort, show='all') }}" class="btn {% if current_show == 'all' %}btn-primary{% else %}btn-light{% endif %}">All</a>
@@ -115,7 +115,7 @@
 </div>
 
 {% if current_sort == 'people' %}
-<p class="text-center text-muted mb-4">Posts from people with mutual friends whose content you've reacted to, newest first.</p>
+<p class="text-center text-muted mb-4">Posts from people you might know!</p>
 {% endif %}
 
 <div class="col-md-8 mx-auto">

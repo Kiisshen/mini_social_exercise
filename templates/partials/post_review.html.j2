@@ -1,0 +1,2 @@
+<p class="small text-muted" id="post-review-help">Highlighted words, phrases, or links were flagged by the automatic check.</p>
+<div class="post-review-preview border rounded p-3 mb-3" id="flagged-post-preview" aria-label="Your post with flagged text highlighted" aria-describedby="post-review-help">{% for segment in review_segments|default([]) %}{% if segment.flagged %}<mark>{{ segment.text|e }}</mark>{% else %}{{ segment.text|e }}{% endif %}{% endfor %}</div>
