@@ -7,7 +7,7 @@
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center">
         <h3 class="card-title mb-0">
-          <a href="/u/{{ post.user_id }}">{{ user_display(post.username) }}</a>
+          <a href="{{ url_for('user_profile', username=post.username) }}">{{ user_display(post.username) }}</a>
         </h3>
         {% if session.get('user_id') == post.user_id %}
         <div class="d-flex align-items-center">
@@ -23,10 +23,11 @@
         {% endif %}
       </div>
       
+      {% include 'partials/introduction_topics.html.j2' %}
       {% if post.is_newcomer_post %}
       {% include 'partials/newcomer_welcome.html.j2' %}
       {% endif %}
-      <p class="card-text mt-2">{{ post.content }}</p>
+      <p class="card-text mt-2">{{ post.content|e }}</p>
 
       <!-- Reactions Display and Add Reaction Button (Copied from feed.html.j2) -->
       <div class="d-flex align-items-center mt-2 mb-2">
@@ -76,7 +77,7 @@
             <h4 class="mb-0">Comments</h4>
           {% endif %}
           <!-- Add Comment Button (triggers modal) -->
-          <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ post.id }}">Add Comment</button>
+          <button class="btn btn-primary btn-sm" id="welcome-comment" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ post.id }}">{{ 'Say hello!👋' if post.is_introduction else 'Add Comment' }}</button>
       </div>
 
       {% if comments %}
@@ -115,7 +116,7 @@
         <form action="/posts/{{ post.id }}/comment" method="POST">
           <div class="mb-3">
             <label for="comment-content-{{ post.id }}" class="form-label">Your Comment</label>
-            <textarea class="form-control" id="comment-content-{{ post.id }}" name="content" rows="3" required></textarea>
+            <textarea class="form-control" id="comment-content-{{ post.id }}" name="content" rows="3" {% if post.is_introduction %}placeholder="Welcome them! Ask about an interest or share something you have in common."{% endif %} required></textarea>
           </div>
           <button type="submit" class="btn btn-primary">Submit Comment</button>
         </form>
@@ -124,4 +125,17 @@
   </div>
 </div>
 
+{% if session.get('user_id') %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.location.hash === '#welcome-comment') {
+    const dialog = document.getElementById('addCommentModal-{{ post.id }}');
+    dialog.addEventListener('shown.bs.modal', () => {
+      document.getElementById('comment-content-{{ post.id }}').focus();
+    });
+    bootstrap.Modal.getOrCreateInstance(dialog).show();
+  }
+});
+</script>
+{% endif %}
 {% endblock %}

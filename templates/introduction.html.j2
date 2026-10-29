@@ -1,0 +1,30 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="container col-md-6 mx-auto mt-5">
+  <div class="card p-4">
+    <h2 class="mb-4 text-center">Introduce yourself</h2>
+    <form method="POST">
+      <div class="mb-3">
+        <label for="introduction-content" class="form-label">Your introduction</label>
+        <textarea class="form-control" id="introduction-content" name="content" rows="5"
+                  placeholder="Hi! What brings you here? What do you enjoy, and what would you like to talk about?"
+                  required>{{ content|e }}</textarea>
+      </div>
+      {% include 'partials/interest_picker.html.j2' %}
+      {% if review_segments is not none %}
+      <div class="alert alert-warning" role="alert">
+        <h2 class="h6">Review before publishing</h2>
+        <p>Your introduction or interests might break the community guidelines. Please review them before sharing.</p>
+        {% include 'partials/post_review.html.j2' %}
+        <a href="{{ url_for('rules') }}">Read the community guidelines</a>
+      </div>
+      <button class="btn btn-primary" type="submit">Review changes</button>
+      <button class="btn btn-warning" type="submit" name="confirm_post" value="1">Publish anyway</button>
+      {% else %}
+      <button class="btn btn-primary" type="submit">Publish introduction</button>
+      {% endif %}
+      <a class="btn btn-light" href="{{ url_for('feed') }}">Maybe later</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

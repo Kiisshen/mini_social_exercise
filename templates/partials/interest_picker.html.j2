@@ -1,0 +1,86 @@
+<div class="mb-3">
+  <label for="interest-menu" class="form-label">Interests</label>
+  <div class="dropdown">
+    <button class="btn btn-light dropdown-toggle" type="button" id="interest-menu"
+            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+      + Add interests
+    </button>
+    <div class="dropdown-menu p-3 w-100" aria-labelledby="interest-menu">
+      {% for topic in interest_topics %}
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="topics" value="{{ topic }}"
+               id="interest-{{ loop.index }}" {% if topic in selected_topics %}checked{% endif %}>
+        <label class="form-check-label" for="interest-{{ loop.index }}">{{ topic }}</label>
+      </div>
+      {% endfor %}
+      <hr>
+      <label for="other-topic" class="form-label">Other topic</label>
+      <div class="input-group">
+        <input class="form-control" id="other-topic" name="other_topic" type="text"
+               value="{{ other_topic|e }}" placeholder="Type your own interest">
+        <button class="btn btn-primary" id="add-custom-interest" type="button" aria-label="Add custom interest">+</button>
+      </div>
+    </div>
+  </div>
+  <div id="custom-interest-values">
+    {% for topic in custom_topics %}
+    <input type="hidden" name="custom_topics" value="{{ topic|e }}">
+    {% endfor %}
+  </div>
+  <div class="d-flex flex-wrap gap-2 mt-3" id="selected-interests" aria-live="polite"></div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const selected = document.getElementById('selected-interests');
+  const other = document.getElementById('other-topic');
+  const customValues = document.getElementById('custom-interest-values');
+  const checkboxes = document.querySelectorAll('input[name="topics"]');
+  const render = () => {
+    selected.replaceChildren();
+    const inputs = [...checkboxes].filter(input => input.checked)
+      .concat([...customValues.querySelectorAll('input')]);
+    for (const input of inputs) {
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'btn btn-sm btn-light';
+      badge.textContent = `${input.value} ×`;
+      badge.setAttribute('aria-label', `Remove interest: ${input.value}`);
+      badge.addEventListener('click', () => {
+        if (input.type === 'checkbox') input.checked = false;
+        else input.remove();
+        render();
+      });
+      selected.appendChild(badge);
+    }
+    if (!inputs.length) selected.textContent = 'No interests selected yet.';
+  };
+  const addCustom = () => {
+    const topic = other.value.trim().replace(/\s+/g, ' ');
+    if (!topic) {
+      other.focus();
+      return;
+    }
+    const common = [...checkboxes].find(input => input.value.toLowerCase() === topic.toLowerCase());
+    if (common) common.checked = true;
+    else if (![...customValues.querySelectorAll('input')].some(input => input.value.toLowerCase() === topic.toLowerCase())) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'custom_topics';
+      input.value = topic;
+      customValues.appendChild(input);
+    }
+    other.value = '';
+    render();
+    other.focus();
+  };
+  checkboxes.forEach(input => input.addEventListener('change', render));
+  document.getElementById('add-custom-interest').addEventListener('click', addCustom);
+  other.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addCustom();
+    }
+  });
+  render();
+});
+</script>

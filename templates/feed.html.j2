@@ -12,7 +12,10 @@
     <div class="card-body">
       <h5 class="card-title">Create a new post</h5>
       {% if encourage_introduction %}
-      <p class="alert alert-info" id="introduction-prompt">Welcome! Want to introduce yourself? Share a little about your interests or what brings you here. It's entirely up to you what you'd like to share.</p>
+      <div class="alert alert-info" id="introduction-prompt">
+        <p class="mb-2">Welcome! Introduce yourself and choose your interests to meet people who enjoy the same things.</p>
+        <a class="btn btn-primary btn-sm" href="{{ url_for('create_introduction') }}">Introduce yourself</a>
+      </div>
       {% endif %}
       <form id="new-post-form" action="{{ url_for('add_post') }}" method="POST" data-check-url="{{ url_for('check_post') }}">
         <input type="hidden" name="confirm_post" id="confirm-post-input" value="0">
@@ -86,7 +89,21 @@
 </section>
 {% endif %}
 
-<h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
+{% if newcomer_matches %}
+<div class="col-md-8 mx-auto mb-4">
+  <h3 class="mb-3">Newcomers who share your interests</h3>
+  {% for introduction in newcomer_matches %}
+  <div class="card p-3 mb-3">
+    <h5>{{ user_display(introduction.username) }}</h5>
+    <p class="text-muted">Shared interests: {{ introduction.shared_interests|join(', ')|e }}</p>
+    <p>{{ introduction.content|truncate(240, True, '...')|e }}</p>
+    <a class="btn btn-primary btn-sm align-self-start" href="{{ url_for('post_detail', post_id=introduction.id) }}#welcome-comment">Say hello!👋</a>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<h2 class="text-center border-bottom pb-2 mb-4"><span>{{ 'Newcomer introductions' if current_sort == 'newcomers' else 'Posts' }}</span></h2>
 
 <div class="mb-4 d-flex flex-wrap justify-content-center gap-3">
 
@@ -96,6 +113,7 @@
     <a href="{{ url_for('feed', sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
     <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
     <a href="{{ url_for('feed', sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
+    <a href="{{ url_for('feed', sort='newcomers', show='all') }}" class="btn {% if current_sort == 'newcomers' %}btn-primary{% else %}btn-light{% endif %}">Newcomers</a>
     {% if session.get('user_id') %}
     <a href="{{ url_for('feed', sort='people', show='all') }}" class="btn {% if current_sort == 'people' %}btn-primary{% else %}btn-light{% endif %}">People you may know</a>
     {% endif %}
@@ -103,7 +121,7 @@
 
   <!-- This is the 'show' filter for All / Following -->
   <!-- The people feed always excludes followed users. -->
-  {% if session.get('user_id') and current_sort != 'people' %}
+  {% if session.get('user_id') and current_sort not in ('people', 'newcomers') %}
   <div class="btn-group" role="group" aria-label="Filter posts">
     <!-- The link preserves the current_sort state -->
     <a href="{{ url_for('feed', sort=current_sort, show='all') }}" class="btn {% if current_show == 'all' %}btn-primary{% else %}btn-light{% endif %}">All</a>
@@ -116,6 +134,8 @@
 
 {% if current_sort == 'people' %}
 <p class="text-center text-muted mb-4">Posts from people you might know!</p>
+{% elif current_sort == 'newcomers' %}
+<p class="text-center text-muted mb-4">Meet new members through their introductions. Ask about an interest or share something you have in common.</p>
 {% endif %}
 
 <div class="col-md-8 mx-auto">
@@ -154,10 +174,13 @@
         {% endif %}
       </div>
       
+      {% with post=entry.post %}
+      {% include 'partials/introduction_topics.html.j2' %}
+      {% endwith %}
       {% if entry.post.is_newcomer_post %}
       {% include 'partials/newcomer_welcome.html.j2' %}
       {% endif %}
-      <p class="mt-2">{{ entry.post.content }}</p>
+      <p class="mt-2">{{ entry.post.content|e }}</p>
 
       <!-- Reactions Display and Add Reaction Button -->
       <div class="d-flex align-items-center mt-2 mb-2">
@@ -239,7 +262,7 @@
         <a href="/posts/{{ entry.post.id }}" class="btn btn-sm btn-light show-comments-btn">
           Show all comments
         </a>
-        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ entry.post.id }}">Add Comment</button>
+        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ entry.post.id }}">{{ 'Say hello!👋' if entry.post.is_introduction else 'Add Comment' }}</button>
       </div>
     </div>
   </div>
@@ -256,7 +279,7 @@
           <form action="/posts/{{ entry.post.id }}/comment" method="POST">
             <div class="mb-3">
               <label for="comment-content-{{ entry.post.id }}" class="form-label">Your Comment</label>
-              <textarea class="form-control" id="comment-content-{{ entry.post.id }}" name="content" rows="3" required></textarea>
+              <textarea class="form-control" id="comment-content-{{ entry.post.id }}" name="content" rows="3" {% if entry.post.is_introduction %}placeholder="Welcome them! Ask about an interest or share something you have in common."{% endif %} required></textarea>
             </div>
             <button type="submit" class="btn btn-primary">Submit Comment</button>
           </form>
@@ -266,7 +289,7 @@
   </div>
 
   {% else %}
-  <p class="text-center">No posts to display.</p>
+  <p class="text-center">{{ 'No introductions yet. New members can use Introduce yourself above to get started.' if current_sort == 'newcomers' else 'No posts to display.' }}</p>
   {% endfor %}
 </div>
 

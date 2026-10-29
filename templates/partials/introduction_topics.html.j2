@@ -1,0 +1,8 @@
+{% if post.is_introduction %}
+<p class="mt-3">
+  <strong>Introduction</strong>
+  {% for topic in post.interests %}
+  <span class="badge bg-secondary">{{ topic|e }}</span>
+  {% endfor %}
+</p>
+{% endif %}

@@ -44,6 +44,16 @@ def get_db():
         if 'newcomer_posts_count' not in {row['name'] for row in g.db.execute('PRAGMA table_info(users)')}:
             with g.db:
                 g.db.execute('ALTER TABLE users ADD COLUMN newcomer_posts_count INTEGER')
+        with g.db:
+            g.db.execute('''CREATE TABLE IF NOT EXISTS introductions (
+                user_id INTEGER PRIMARY KEY,
+                post_id INTEGER NOT NULL UNIQUE
+            )''')
+            g.db.execute('''CREATE TABLE IF NOT EXISTS user_interests (
+                user_id INTEGER NOT NULL,
+                topic TEXT NOT NULL COLLATE NOCASE,
+                PRIMARY KEY (user_id, topic)
+            )''')
 
     return g.db
 
@@ -107,17 +117,134 @@ REACTION_EMOJIS = {
 }
 REACTION_TYPES = list(REACTION_EMOJIS.keys())
 
+INTEREST_TOPICS = ['DIY', 'Books', 'Food', 'Outdoors', 'Fitness']
+
+
+def saved_interests(user_id):
+    return [row['topic'] for row in query_db(
+        'SELECT topic FROM user_interests WHERE user_id = ? ORDER BY topic',
+        (user_id,))]
+
+
+def introduction_details(post_id):
+    introduction = query_db(
+        'SELECT user_id FROM introductions WHERE post_id = ?', (post_id,), one=True)
+    return {'is_introduction': introduction is not None,
+            'interests': [moderate_content(topic)[0] for topic in
+                          saved_interests(introduction['user_id'])] if introduction else []}
+
+
+def parse_interests(form):
+    topics = []
+    values = form.getlist('topics') + form.getlist('custom_topics')
+    values.append(form.get('other_topic', ''))
+    for value in values:
+        topic = value.strip()
+        if topic and topic.lower() not in [saved.lower() for saved in topics]:
+            topics.append(topic)
+    return topics
+
+
+def interest_picker_values(topics):
+    submitted = request.method == 'POST'
+    return {
+        'interest_topics': INTEREST_TOPICS,
+        'selected_topics': request.form.getlist('topics') if submitted else topics,
+        'custom_topics': (request.form.getlist('custom_topics') if submitted else
+                          [topic for topic in topics if topic not in INTEREST_TOPICS]),
+        'other_topic': request.form.get('other_topic', '') if submitted else '',
+    }
+
+
+def save_interests(db, user_id, topics):
+    db.execute('DELETE FROM user_interests WHERE user_id = ?', (user_id,))
+    db.executemany('INSERT INTO user_interests (user_id, topic) VALUES (?, ?)',
+                   [(user_id, topic) for topic in topics])
+
+
+def matching_topics(content, topics):
+    return [topic for topic in topics if topic.lower() in content.lower()]
+
+
+def matching_introductions(user_id):
+    topics = saved_interests(user_id)
+    interest_keys = {topic.casefold() for topic in topics}
+    history = ''
+    if not topics:
+        profile = query_db('SELECT profile FROM users WHERE id = ?', (user_id,), one=True)
+        enjoyed_posts = query_db('''SELECT p.content FROM posts p
+            JOIN reactions r ON r.post_id = p.id
+            WHERE r.user_id = ? AND r.reaction_type IN ('like', 'love', 'laugh', 'wow')''',
+            (user_id,))
+        history = ' '.join([(profile['profile'] or '') if profile else '']
+                           + [post['content'] for post in enjoyed_posts]).casefold()
+
+    matches = []
+    candidates = query_db('''SELECT p.id, p.content, p.created_at, p.user_id, u.username
+        FROM introductions i JOIN posts p ON p.id = i.post_id
+        JOIN users u ON u.id = i.user_id
+        WHERE i.user_id != ? ORDER BY p.created_at DESC, p.id DESC''', (user_id,))
+    for candidate in candidates:
+        interests = saved_interests(candidate['user_id'])
+        shared = [topic for topic in interests
+                  if topic.casefold() in interest_keys or
+                  (not topics and matching_topics(history, [topic]))]
+        if shared:
+            post = dict(candidate)
+            post['shared_interests'] = [moderate_content(topic)[0] for topic in shared]
+            post['content'], _ = moderate_content(post['content'])
+            matches.append(post)
+    return sorted(matches, key=lambda post: len(post['shared_interests']), reverse=True)[:3]
+
+
+@app.route('/introductions/new', methods=['GET', 'POST'])
+def create_introduction():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('login'))
+    existing = query_db('SELECT post_id FROM introductions WHERE user_id = ?',
+                        (user_id,), one=True)
+    if existing:
+        return redirect(url_for('post_detail', post_id=existing['post_id']))
+
+    content = request.form.get('content', '')
+    topics = saved_interests(user_id)
+    review_segments = None
+    if request.method == 'POST':
+        topics = parse_interests(request.form)
+        if not content.strip():
+            flash('Write a short introduction before publishing.', 'warning')
+            return redirect(url_for('create_introduction'))
+        _, score = moderate_content(content + '\n' + ', '.join(topics))
+        if score > 0 and request.form.get('confirm_post') != '1':
+            review_segments = post_review_segments(content + '\nInterests: ' + ', '.join(topics))
+        else:
+            db = get_db()
+            with db:
+                cur = db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
+                                 (user_id, content.strip()))
+                db.execute('INSERT INTO introductions (user_id, post_id) VALUES (?, ?)',
+                           (user_id, cur.lastrowid))
+                save_interests(db, user_id, topics)
+                db.execute('''UPDATE users SET newcomer_posts_count = newcomer_posts_count + 1
+                    WHERE id = ? AND newcomer_posts_count IS NOT NULL''', (user_id,))
+            flash('Your introduction is published! Members with shared interests can find you.', 'success')
+            return redirect(url_for('feed', sort='newcomers'))
+
+    return render_template('introduction.html.j2', content=content,
+                           review_segments=review_segments, **interest_picker_values(topics))
+
 
 @app.route('/')
 def feed():
     #  1. Get Pagination and Filter Parameters 
     try:
-        page = int(request.args.get('page', 1))
+        page = max(1, int(request.args.get('page', 1)))
     except ValueError:
         page = 1
     sort = request.args.get('sort', 'new').lower()
     show = request.args.get('show', 'all').lower()
-    if sort == 'people':
+    if sort in ('people', 'newcomers'):
         show = 'all'
     
     # Define how many posts to show per page
@@ -131,7 +258,15 @@ def feed():
     current_user = (query_db('SELECT newcomer_posts_count FROM users WHERE id = ?',
                              (current_user_id,), one=True)
                     if current_user_id is not None else None)
-    encourage_introduction = current_user is not None and current_user['newcomer_posts_count'] == 0
+    own_introduction = (query_db('''SELECT i.post_id FROM introductions i
+        JOIN posts p ON p.id = i.post_id WHERE i.user_id = ?''',
+        (current_user_id,), one=True) if current_user else None)
+    encourage_introduction = (current_user is not None
+                             and current_user['newcomer_posts_count'] is not None
+                             and own_introduction is None)
+    newcomer_matches = (matching_introductions(current_user_id)
+                       if current_user_id and page == 1 and show == 'all'
+                       and sort in ('new', 'popular', 'recommended') else [])
     params = []
 
     # List for suggested users.
@@ -228,6 +363,10 @@ def feed():
 
     #  2. Build the Query 
     conditions = []
+    if sort == 'newcomers':
+        conditions.append('p.id IN (SELECT post_id FROM introductions)')
+    else:
+        conditions.append('p.id NOT IN (SELECT post_id FROM introductions)')
     if show == 'following' and current_user_id:
         conditions.append('p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)')
         params.append(current_user_id)
@@ -333,6 +472,7 @@ def feed():
         post_dict = dict(post)
         post_dict['mutual_count'] = mutual_counts.get(post['user_id'], 0)
         post_dict['is_newcomer_post'] = is_newcomer_post(post)
+        post_dict.update(introduction_details(post['id']))
         post_dict['content'], _ = moderate_content(post_dict['content'])
         comments_moderated = []
         for comment in comments_raw:
@@ -353,6 +493,8 @@ def feed():
                            # Pass the people_you_might_know list to the template, handled further in feed.html.j2.
                            people_you_might_know=people_you_might_know,
                            encourage_introduction=encourage_introduction,
+                           own_introduction=own_introduction,
+                           newcomer_matches=newcomer_matches,
                            current_sort=sort,
                            current_show=show,
                            page=page, # Pass current page number
@@ -438,6 +580,7 @@ def delete_post(post_id):
     # To maintain database integrity, delete associated records first
     db.execute('DELETE FROM comments WHERE post_id = ?', (post_id,))
     db.execute('DELETE FROM reactions WHERE post_id = ?', (post_id,))
+    db.execute('DELETE FROM introductions WHERE post_id = ?', (post_id,))
     # Finally, delete the post itself
     db.execute('DELETE FROM posts WHERE id = ?', (post_id,))
     db.commit()
@@ -446,7 +589,7 @@ def delete_post(post_id):
 
     return redirect(url_for('feed'))
 
-@app.route('/u/<username>')
+@app.route('/u/<username>', methods=['GET', 'POST'])
 def user_profile(username):
     """Displays a user's profile page with moderated bio, posts, and latest comments."""
     
@@ -455,6 +598,16 @@ def user_profile(username):
         abort(404)
 
     user = dict(user_raw)
+    topics = saved_interests(user['id'])
+    if request.method == 'POST':
+        if session.get('user_id') != user['id']:
+            abort(403)
+        topics = parse_interests(request.form)
+        db = get_db()
+        with db:
+            save_interests(db, user['id'], topics)
+        flash('Your interests have been saved.', 'success')
+        return redirect(url_for('user_profile', username=username, _anchor='profile-interests-title'))
     moderated_bio, _ = moderate_content(user.get('profile', ''))
     user['profile'] = moderated_bio
 
@@ -463,6 +616,7 @@ def user_profile(username):
     for post_raw in posts_raw:
         post = dict(post_raw)
         post['is_newcomer_post'] = is_newcomer_post(post)
+        post.update(introduction_details(post['id']))
         moderated_post_content, _ = moderate_content(post['content'])
         post['content'] = moderated_post_content
         posts.append(post)
@@ -499,7 +653,9 @@ def user_profile(username):
                            comments=comments,
                            followers_count=followers_count, 
                            following_count=following_count,
-                           is_following=is_currently_following)
+                           is_following=is_currently_following,
+                           profile_interests=[moderate_content(topic)[0] for topic in topics],
+                           **interest_picker_values(topics))
     
 
 @app.route('/u/<username>/followers')
@@ -547,6 +703,7 @@ def post_detail(post_id):
     # Convert the raw database row to a mutable dictionary
     post = dict(post_raw)
     post['is_newcomer_post'] = is_newcomer_post(post)
+    post.update(introduction_details(post['id']))
     # Unpack the tuple from moderate_content, we only need the moderated content string here
     moderated_post_content, _ = moderate_content(post['content'])
     post['content'] = moderated_post_content
@@ -999,6 +1156,8 @@ def admin_delete_user(user_id):
         return redirect(url_for('admin_dashboard'))
     
     db = get_db()
+    db.execute('DELETE FROM introductions WHERE user_id = ?', (user_id,))
+    db.execute('DELETE FROM user_interests WHERE user_id = ?', (user_id,))
     db.execute('DELETE FROM users WHERE id = ?', (user_id,))
     db.commit()
     flash(f'User {user_id} and all their content has been deleted.', 'success')
@@ -1014,6 +1173,7 @@ def admin_delete_post(post_id):
     db = get_db()
     db.execute('DELETE FROM comments WHERE post_id = ?', (post_id,))
     db.execute('DELETE FROM reactions WHERE post_id = ?', (post_id,))
+    db.execute('DELETE FROM introductions WHERE post_id = ?', (post_id,))
     db.execute('DELETE FROM posts WHERE id = ?', (post_id,))
     db.commit()
     flash(f'Post {post_id} has been deleted.', 'success')
@@ -1257,6 +1417,7 @@ def get_recommendation_data(user_id):
     posts = query_db('''
         SELECT p.id, p.content, p.created_at, p.user_id, u.username
         FROM posts p JOIN users u ON u.id = p.user_id
+        WHERE p.id NOT IN (SELECT post_id FROM introductions)
         ORDER BY p.created_at DESC, p.id DESC
     ''')
     if not posts:
@@ -1272,9 +1433,11 @@ def get_recommendation_data(user_id):
     reacted_ids = {row['post_id'] for row in reactions}
     positive_ids = {row['post_id'] for row in reactions
                     if row['reaction_type'] in ('like', 'love', 'laugh', 'wow')}
+    interests = saved_interests(user_id)
+    interest_scores = {post['id']: len(matching_topics(post['content'], interests)) / len(interests)
+                       if interests else 0.0 for post in posts}
     if not positive_ids and not followed_ids:
-        cache[user_id] = (posts, followed_ids, reacted_ids,
-                          {post['id']: 0.0 for post in posts})
+        cache[user_id] = (posts, followed_ids, reacted_ids, interest_scores)
         return cache[user_id]
 
     stop_words = set('''a an and are as at be been but by can did do does for
@@ -1318,7 +1481,8 @@ def get_recommendation_data(user_id):
         similarity = (sum(value * profile[word]
                           for word, value in vectors[post['id']].items()) / norm
                       if norm else 0)
-        return similarity + (0.1 if post['user_id'] in followed_ids else 0)
+        return (similarity + 0.5 * interest_scores[post['id']]
+                + (0.1 if post['user_id'] in followed_ids else 0))
 
     cache[user_id] = (posts, followed_ids, reacted_ids,
                       {post['id']: relevance(post) for post in posts})
